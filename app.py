@@ -20,6 +20,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
+
 MODEL_PATH = os.path.join(
     BASE_DIR,
     "models",
@@ -43,6 +44,13 @@ ALLOWED_EXTENSIONS = {
 }
 
 MAX_UPLOAD_MB = 20
+
+# Maximum input dimension for CPU deployment
+MAX_INPUT_DIMENSION = 512
+
+# Tile size for Real-ESRGAN
+TILE_SIZE = 128
+TILE_PAD = 10
 
 
 # ============================================================
@@ -78,12 +86,15 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 use_half = device == "cuda"
 
+
 print("=" * 60)
 print("Real-ESRGAN Backend")
 print("=" * 60)
 print("Device:", device)
 print("Model:", MODEL_PATH)
 print("Scale: 4x")
+print("Tile:", TILE_SIZE)
+print("Maximum Input Dimension:", MAX_INPUT_DIMENSION)
 print("=" * 60)
 
 
@@ -101,8 +112,8 @@ upsampler = RealESRGANer(
     scale=4,
     model_path=MODEL_PATH,
     model=model,
-    tile=256,
-    tile_pad=10,
+    tile=TILE_SIZE,
+    tile_pad=TILE_PAD,
     pre_pad=0,
     half=use_half,
     gpu_id=0 if use_half else None,
@@ -118,6 +129,7 @@ print("=" * 60)
 # ============================================================
 
 def allowed_file(filename):
+
     return (
         "." in filename
         and filename.rsplit(".", 1)[1].lower()
@@ -131,11 +143,14 @@ def allowed_file(filename):
 
 @app.get("/")
 def health_check():
+
     return jsonify({
         "status": "online",
         "service": "Real-ESRGAN Image Enhancement API",
         "device": device,
-        "scale": "4x"
+        "scale": "4x",
+        "tile": TILE_SIZE,
+        "max_input_dimension": MAX_INPUT_DIMENSION
     })
 
 
@@ -151,20 +166,26 @@ def enhance():
     # ----------------------------------------
 
     if "image" not in request.files:
+
         return jsonify({
             "success": False,
             "error": "No image was uploaded."
         }), 400
 
+
     file = request.files["image"]
 
+
     if not file.filename:
+
         return jsonify({
             "success": False,
             "error": "Please choose an image."
         }), 400
 
+
     if not allowed_file(file.filename):
+
         return jsonify({
             "success": False,
             "error": (
@@ -180,10 +201,20 @@ def enhance():
 
     job_id = uuid.uuid4().hex
 
-    ext = file.filename.rsplit(".", 1)[1].lower()
+    ext = file.filename.rsplit(
+        ".",
+        1
+    )[1].lower()
 
-    input_name = f"{job_id}_input.{ext}"
-    output_name = f"{job_id}_x4.png"
+
+    input_name = (
+        f"{job_id}_input.{ext}"
+    )
+
+    output_name = (
+        f"{job_id}_x4.png"
+    )
+
 
     input_path = os.path.join(
         UPLOAD_DIR,
@@ -212,15 +243,74 @@ def enhance():
         cv2.IMREAD_COLOR
     )
 
+
     if img is None:
+
         return jsonify({
             "success": False,
-            "error": "The uploaded image could not be decoded."
+            "error": (
+                "The uploaded image "
+                "could not be decoded."
+            )
         }), 400
 
 
     # ----------------------------------------
-    # Input dimensions
+    # Original dimensions
+    # ----------------------------------------
+
+    original_width = img.shape[1]
+    original_height = img.shape[0]
+
+
+    # ----------------------------------------
+    # Resize large images for CPU deployment
+    # ----------------------------------------
+
+    max_dimension = max(
+        original_width,
+        original_height
+    )
+
+
+    if max_dimension > MAX_INPUT_DIMENSION:
+
+        resize_scale = (
+            MAX_INPUT_DIMENSION /
+            max_dimension
+        )
+
+
+        new_width = max(
+            1,
+            int(
+                original_width *
+                resize_scale
+            )
+        )
+
+
+        new_height = max(
+            1,
+            int(
+                original_height *
+                resize_scale
+            )
+        )
+
+
+        img = cv2.resize(
+            img,
+            (
+                new_width,
+                new_height
+            ),
+            interpolation=cv2.INTER_AREA
+        )
+
+
+    # ----------------------------------------
+    # Dimensions used for inference
     # ----------------------------------------
 
     input_width = img.shape[1]
@@ -233,18 +323,26 @@ def enhance():
 
     start = time.time()
 
+
     try:
 
         if torch.cuda.is_available():
+
             torch.cuda.empty_cache()
+
 
         output, _ = upsampler.enhance(
             img,
             outscale=4
         )
 
+
+        # ------------------------------------
         # Make sure output is uint8
+        # ------------------------------------
+
         if output.dtype != "uint8":
+
             output = output.clip(
                 0,
                 255
@@ -260,13 +358,17 @@ def enhance():
             output
         )
 
+
         if not success:
+
             raise RuntimeError(
                 "Could not save the enhanced image."
             )
 
 
-        elapsed = time.time() - start
+        elapsed = (
+            time.time() - start
+        )
 
 
     except RuntimeError as exc:
@@ -274,7 +376,9 @@ def enhance():
         if "CUDA out of memory" in str(exc):
 
             if torch.cuda.is_available():
+
                 torch.cuda.empty_cache()
+
 
             return jsonify({
                 "success": False,
@@ -283,6 +387,7 @@ def enhance():
                     "Try a smaller image."
                 )
             }), 500
+
 
         return jsonify({
             "success": False,
@@ -318,6 +423,9 @@ def enhance():
         "success": True,
 
         "download_url": download_url,
+
+        "original_width": original_width,
+        "original_height": original_height,
 
         "input_width": input_width,
         "input_height": input_height,
@@ -374,12 +482,23 @@ if __name__ == "__main__":
     print("=" * 60)
     print("Real-ESRGAN Super Resolution API")
     print("=" * 60)
+
     print("Device:", device)
     print("Model:", MODEL_PATH)
     print("Scale: 4x")
-    print("Tile: 256")
-    print("Local URL: http://127.0.0.1:5000")
+    print("Tile:", TILE_SIZE)
+    print(
+        "Maximum Input Dimension:",
+        MAX_INPUT_DIMENSION
+    )
+
+    print(
+        "Local URL: "
+        "http://127.0.0.1:5000"
+    )
+
     print("=" * 60)
+
 
     app.run(
         host="0.0.0.0",
