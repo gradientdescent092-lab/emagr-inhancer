@@ -1,0 +1,7 @@
+Flask>=3.0,<4
+numpy<2
+opencv-python
+Pillow
+tqdm
+basicsr-fixed
+realesrgan==0.3.0
