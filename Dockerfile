@@ -5,7 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /app
 
-# Install system libraries required by OpenCV and Git
+# System dependencies
 RUN apt-get update && apt-get install -y \
     git \
     libgl1 \
@@ -15,11 +15,17 @@ RUN apt-get update && apt-get install -y \
     libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy backend project
+# Install CPU-only PyTorch
+RUN pip install --no-cache-dir \
+    torch==2.5.1+cpu \
+    torchvision==0.20.1+cpu \
+    --index-url https://download.pytorch.org/whl/cpu
+
+# Copy application
 COPY . .
 
-# Install Python dependencies
+# Install remaining dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Start Flask API
+# Start API
 CMD ["sh", "-c", "gunicorn --timeout 600 --workers 1 --bind 0.0.0.0:$PORT app:app"]
